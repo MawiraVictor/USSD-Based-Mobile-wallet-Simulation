@@ -1,29 +1,43 @@
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import PlainTextResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI, Form
+from fastapi.responses import FileResponse, PlainTextResponse
+
 from database import init_db
 from state_machine import handle
 
-app = FastAPI()
-init_db()
+STATIC_DIR = Path(__file__).parent / "static"
 
-# session store: sessionId -> {"phone": ..., "last_text": ...}
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="PyWallet USSD Simulator", lifespan=lifespan)
+
+# session store: sessionId -> {"phone": ...}
 sessions: dict = {}
+
 
 @app.post("/ussd", response_class=PlainTextResponse)
 async def ussd(
     sessionId: str = Form(...),
     phoneNumber: str = Form(...),
     text: str = Form(""),
+    serviceCode: str = Form("*141#"),  # sent by real gateways; unused here
 ):
-    session = sessions.setdefault(sessionId, {"phone": phoneNumber})
-    response = handle(phoneNumber, text, session)
+    phone = phoneNumber.strip().lstrip("+")
+    session = sessions.setdefault(sessionId, {"phone": phone})
+    response = handle(phone, text, session)
 
     if response.startswith("END"):
         sessions.pop(sessionId, None)
     return response
 
-@app.get("/", response_class=HTMLResponse)
+
+@app.get("/")
 async def index():
-    with open("static/index.html") as f:
-        return f.read()
+    return FileResponse(STATIC_DIR / "index.html")
