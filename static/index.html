@@ -1,32 +1,44 @@
 <!DOCTYPE html>
 <html>
 <head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>USSD Wallet Simulator</title>
 <style>
-  body { font-family: system-ui, sans-serif; background:#222; display:flex;
-         justify-content:center; align-items:center; min-height:100vh; margin:0; }
+  body { font-family: system-ui, sans-serif; background:#222; color:#ddd; display:flex;
+         flex-direction:column; justify-content:center; align-items:center;
+         min-height:100vh; margin:0; padding:16px; box-sizing:border-box; }
   .phone { background:#000; border:12px solid #333; border-radius:36px;
-           width:320px; padding:16px; box-shadow:0 10px 40px rgba(0,0,0,.6); }
+           width:320px; max-width:100%; padding:16px; box-sizing:border-box;
+           box-shadow:0 10px 40px rgba(0,0,0,.6); }
   .screen { background:#c8e6c9; color:#000; font-family:monospace;
             height:220px; padding:12px; overflow-y:auto; white-space:pre-wrap;
-            border-radius:8px; font-size:14px; }
-  .input-row { display:flex; gap:8px; margin:10px 0; }
+            border-radius:8px 8px 0 0; font-size:14px; }
+  .entry { background:#a5d6a7; color:#000; font-family:monospace; font-size:16px;
+           padding:6px 12px; min-height:22px; border-radius:0 0 8px 8px; }
+  .entry.hidden { visibility:hidden; }
+  .input-row { display:flex; gap:8px; margin:10px 0; align-items:center; }
+  .input-row label { font-size:12px; color:#aaa; }
   .input-row input { flex:1; padding:8px; border-radius:6px; border:none; }
   .keypad { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
   .keypad button { padding:14px; font-size:18px; border-radius:8px; border:none;
                    background:#444; color:#fff; cursor:pointer; }
   .keypad button:active { background:#666; }
-  .dial { background:#0a0 !important; }
-  .end  { background:#a00 !important; }
+  .keypad .dial { background:#0a0; }
+  .keypad .end  { background:#a00; }
+  .keypad .del  { background:#555; font-size:14px; }
+  .hint { max-width:320px; font-size:12px; color:#999; margin-top:14px; line-height:1.5; }
+  .hint code { color:#cfc; }
 </style>
 </head>
 <body>
 <div class="phone">
-  <div class="screen" id="screen">Dial *141# to start</div>
+  <div class="screen" id="screen">Press DIAL to open *141#</div>
+  <div class="entry hidden" id="entry"></div>
 
   <div class="input-row">
-    <input id="phone" value="254700000001" placeholder="phone">
+    <label for="phone">Your number</label>
+    <input id="phone" value="254700000001" inputmode="numeric">
   </div>
 
   <div class="keypad">
@@ -39,53 +51,99 @@
     <button onclick="press('7')">7</button>
     <button onclick="press('8')">8</button>
     <button onclick="press('9')">9</button>
-    <button onclick="press('*')">*</button>
+    <button onclick="press('.')">.</button>
     <button onclick="press('0')">0</button>
-    <button onclick="press('#')">#</button>
+    <button class="del" onclick="del()">DEL</button>
     <button class="dial" onclick="dial()">DIAL</button>
+    <button onclick="submit()">SEND</button>
     <button class="end" onclick="endSession()">END</button>
   </div>
 </div>
 
+<p class="hint">
+  Demo accounts: <code>254700000001</code> (KES 1,500) and <code>254700000002</code> (KES 500), PIN <code>1234</code>.
+  Any other number gets the registration menu. You can also type on your keyboard: digits, Enter to send, Backspace to delete, Esc to end.
+</p>
+
 <script>
+// The gateway protocol: every request carries the *cumulative* input joined by '*'.
+// `history` holds the answers already sent; `current` is what the user is typing now.
 let sessionId = null;
-let text = "";
+let history = [];
+let current = "";
+let busy = false;
 
-function $(id){ return document.getElementById(id); }
+const $ = id => document.getElementById(id);
 
-async function send() {
-  const body = new URLSearchParams({
-    sessionId: sessionId || crypto.randomUUID(),
-    phoneNumber: $("phone").value,
-    text: text
-  });
-  const res = await fetch("/ussd", { method: "POST", body });
-  const reply = await res.text();
-  $("screen").textContent = reply;
-  if (reply.startsWith("END")) {
-    sessionId = null;
-    text = "";
+function render() {
+  const entry = $("entry");
+  entry.textContent = current;
+  entry.classList.toggle("hidden", !sessionId);
+}
+
+async function send(text) {
+  busy = true;
+  try {
+    const body = new URLSearchParams({ sessionId, phoneNumber: $("phone").value, text });
+    const res = await fetch("/ussd", { method: "POST", body });
+    const reply = res.ok ? await res.text() : "END Network error (" + res.status + ")";
+    $("screen").textContent = reply.replace(/^(CON|END) /, "");
+    if (reply.startsWith("END")) reset(false);
+    return reply.startsWith("CON");
+  } catch (e) {
+    $("screen").textContent = "Connection failed. Is the server running?";
+    reset(false);
+    return false;
+  } finally {
+    busy = false;
+    render();
   }
 }
 
+function reset(clearScreen) {
+  sessionId = null;
+  history = [];
+  current = "";
+  if (clearScreen) $("screen").textContent = "Session ended. Press DIAL to open *141#";
+}
+
 function dial() {
+  if (busy) return;
   sessionId = crypto.randomUUID();
-  text = "";
-  send();
+  history = [];
+  current = "";
+  send("");
+}
+
+async function submit() {
+  if (busy) return;
+  if (!sessionId) { $("screen").textContent = "Press DIAL first"; return; }
+  if (current === "") return;
+  const answer = current;
+  const ok = await send([...history, answer].join("*"));
+  if (ok) { history.push(answer); current = ""; render(); }
 }
 
 function press(key) {
-  if (!sessionId) { $("screen").textContent = "Dial *141# first"; return; }
-  if (key === "#") { send(); return; }   // send current input
-  text += key;
-  $("screen").textContent += key;
+  if (!sessionId || busy) return;
+  current += key;
+  render();
 }
 
-function endSession() {
-  sessionId = null;
-  text = "";
-  $("screen").textContent = "Session ended. Dial *141# to start";
+function del() {
+  current = current.slice(0, -1);
+  render();
 }
+
+function endSession() { reset(true); render(); }
+
+document.addEventListener("keydown", e => {
+  if (e.target.id === "phone") return;
+  if (/^[0-9.]$/.test(e.key)) press(e.key);
+  else if (e.key === "Enter") submit();
+  else if (e.key === "Backspace") del();
+  else if (e.key === "Escape") endSession();
+});
 </script>
 </body>
 </html>
